@@ -2,9 +2,11 @@ package nodescala
 
 import java.net.InetSocketAddress
 import java.util.concurrent.{LinkedBlockingQueue, ThreadPoolExecutor, TimeUnit}
-
+import scala.collection.mutable.ListBuffer
+import scala.util._
 import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
-
+import scala.concurrent.ExecutionContext.Implicits.global
+import async.Async._
 import scala.collection.JavaConversions._
 import scala.collection._
 import scala.concurrent._
@@ -25,9 +27,14 @@ trait NodeScala {
    *
    *  @param exchange     the exchange used to write the response back
    *  @param token        the cancellation token
-   *  @param body         the response to write back
+   *  @param response         the response to write back
    */
-  private def respond(exchange: Exchange, token: CancellationToken, response: Response): Unit = ???
+  private def respond(exchange: Exchange, token: CancellationToken, response: Response): Unit = {
+    while (token.nonCancelled && response.hasNext) {
+      exchange.write(response.next)
+    }
+    exchange.close()
+  }
 
   /** A server:
    *  1) creates and starts an http listener
@@ -39,8 +46,18 @@ trait NodeScala {
    *  @param handler        a function mapping a request to a response
    *  @return               a subscription that can stop the server and all its asynchronous operations *entirely*
    */
-  def start(relativePath: String)(handler: Request => Response): Subscription = ???
-
+  def start(relativePath: String)(handler: Request => Response): Subscription = {
+    val listener = createListener(relativePath)
+    val listenerSubscription = listener.start()
+    val processSubscription = Future.run() { ct => async {
+      while (ct.nonCancelled) {
+        val (request, exchange) = await {listener.nextRequest()}
+        respond(exchange,ct,handler(request))
+      }
+    }
+    }
+   Subscription(listenerSubscription, processSubscription)
+  }
 }
 
 
